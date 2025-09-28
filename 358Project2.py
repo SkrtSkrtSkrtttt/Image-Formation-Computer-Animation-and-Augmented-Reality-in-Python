@@ -1,6 +1,8 @@
 # Naafiul Hossain (115017623)
 # 9/17//25
-# Project 2
+# Project 2-Computer Vision
+# 115107623
+
 import numpy as np
 import cv2
 import sys
@@ -8,13 +10,12 @@ import sys
 # -- Colab/desktop display helper ---------------------------------------------
 def show_img(img, win_name="frame"):
     try:
-        # Colab
         from google.colab.patches import cv2_imshow  # type: ignore
         cv2_imshow(img)
+        return -1  # no key handling in Colab
     except Exception:
-        # Desktop
         cv2.imshow(win_name, img)
-        cv2.waitKey(1)
+        return cv2.waitKey(1) & 0xFF  # return key pressed
 
 # -- Geometry / projection helpers ---------------------------------------------
 def Map2Da(Km, Rm, Tm, Xw):
@@ -150,7 +151,7 @@ def main():
     accel   = np.array([ 0.0,  -0.8,  0.0  ])
     th0     = 0.0                                # degrees
     w0      = 20.0                               # degrees/s
-    p_scale = 0.01                                # mm per pixel
+    p_scale = 0.01                               # mm per pixel
     Rmax, Cmax = 600, 600
     r_center, c_center = np.round(Rmax/2), np.round(Cmax/2)
 
@@ -165,64 +166,86 @@ def main():
                    [u_dir[2],  0,        -u_dir[0]],
                    [-u_dir[1], u_dir[0],  0      ]], dtype=np.float64)
 
-    # -- Precompute face directions for manual texturing
-    #     i (texture rows) follows V2 - V1; j (texture cols) follows V4 - V1
-    #     This matches the given cube vertex layout.
-    v21 = (V_2 - V_1).astype(np.float64)
-    v41 = (V_4 - V_1).astype(np.float64)
-
-    # -- Animation timeline
-    time_vals = np.linspace(0.0, 2.3, 24)  # 24 frames over ~2.3s (feel free to change)
-
-    # -- Correct 12 edges from the assignment (0-based indices)
+    # -- Correct 12 edges (0-based indices)
     edges = [
         (0,1), (1,2), (2,3), (3,0),     # front face V1..V4
         (6,5), (5,7), (7,4), (4,6),     # back  face V7,V6,V8,V5
         (0,6), (1,5), (2,7), (3,4)      # verticals
     ]
 
-    for t_val in time_vals:
-        # Rotation (Rodrigues from axis-angle)
-        th_t  = th0 + w0 * t_val
-        thRad = np.deg2rad(th_t)
+    # --- Infinite animation timing ---
+    fps = 30.0
+    dt  = 1.0 / fps
+
+    # State for incremental motion
+    theta = th0
+    T     = T0.astype(np.float64).copy()
+    v     = vel.astype(np.float64).copy()
+
+    # Keep the cube in view: simple "bounce" limits in camera coords (mm)
+    x_lim = (-80.0, 80.0)
+    y_lim = (-80.0, 80.0)
+    z_lim = (380.0, 620.0)  # around 500 mm
+
+    while True:
+        # rotation
+        theta = (theta + w0 * dt) % 360.0
+        thRad = np.deg2rad(theta)
         Rm = np.eye(3) + np.sin(thRad) * Nm + (1.0 - np.cos(thRad)) * (Nm @ Nm)
 
-        # Translation
-        Tm = T0 + vel * t_val + 0.5 * accel * (t_val ** 2)
+        # translation (integrate)
+        T += v * dt + 0.5 * accel * (dt ** 2)
+        v += accel * dt
 
-        # Start from background (AR)
+        # bounce at bounds
+        if T[0] < x_lim[0]:
+            T[0] = x_lim[0]; v[0] = abs(v[0])
+        elif T[0] > x_lim[1]:
+            T[0] = x_lim[1]; v[0] = -abs(v[0])
+        if T[1] < y_lim[0]:
+            T[1] = y_lim[0]; v[1] = abs(v[1])
+        elif T[1] > y_lim[1]:
+            T[1] = y_lim[1]; v[1] = -abs(v[1])
+        if T[2] < z_lim[0]:
+            T[2] = z_lim[0]; v[2] = abs(v[2])
+        elif T[2] > z_lim[1]:
+            T[2] = z_lim[1]; v[2] = -abs(v[2])
+
+        # render
         frame = bg_img.copy()
 
-        # Project vertices
+        # project vertices
         px_verts = []
         for V in vertices:
-            q_mm = Map2Da(Km, Rm, Tm, V)
+            q_mm = Map2Da(Km, Rm, T, V)
             if q_mm is None:
                 px_verts.append(None)
             else:
                 px_verts.append(MapIndex(q_mm, c_center, r_center, p_scale))
 
-        # Draw wireframe (red in BGR = (0,0,255))
+        # wireframe
         for e in edges:
             drawLine(frame, px_verts[e[0]], px_verts[e[1]], bgr=(0,0,255), thickness=2)
 
-        # Manual texture mapping on front face V1,V2,V3,V4 via V1,V2,V4 basis
+        # texture front face
         frame = apply_texture_manual(
-            frame, Km, Rm, Tm,
+            frame, Km, Rm, T,
             V_1, V_2, V_4,
             c_center, r_center, p_scale,
             tex_map
         )
 
-        # Show (Colab or desktop)
-        show_img(frame)
+        # display (press 'q' or Esc to quit on desktop)
+        key = show_img(frame)
+        if key in (ord('q'), 27):
+            break
 
-    # Keep window open on desktop
+    # desktop cleanup
     try:
         from google.colab.patches import cv2_imshow  # type: ignore
     except Exception:
-        cv2.waitKey(0)
         cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
